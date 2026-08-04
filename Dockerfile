@@ -1,9 +1,9 @@
-FROM golang:1.24.5-alpine3.22 AS build
+FROM golang:1.26.5-alpine3.23 AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go mod tidy && \
-    CGO_ENABLED=0 go test ./... && \
+RUN CGO_ENABLED=0 go test ./... && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/coder-derp-verifier .
 
 FROM gcr.io/distroless/static-debian12:nonroot
