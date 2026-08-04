@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,10 +83,12 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 
 func TestSQLiteReadOnlyURL(t *testing.T) {
 	got := sqliteReadOnlyURL("/var/lib/headscale/db/headscale.db")
-	if got != "file:///var/lib/headscale/db/headscale.db?mode=ro" {
-		t.Fatalf("got %q", got)
-	}
-	if _, err := netip.ParseAddr("198.51.100.7"); err != nil {
+	parsed, err := url.Parse(got)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if parsed.Scheme != "file" || parsed.Path != "/var/lib/headscale/db/headscale.db" ||
+		parsed.Query().Get("mode") != "ro" || parsed.Query().Get("_pragma") != "busy_timeout=2000" {
+		t.Fatalf("got %q", got)
 	}
 }

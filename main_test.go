@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -48,7 +49,10 @@ func TestNodeKey(t *testing.T) {
 
 func TestVerify(t *testing.T) {
 	private := key.NewNode()
-	reqBody, err := json.Marshal(tailcfg.DERPAdmitClientRequest{NodePublic: private.Public()})
+	reqBody, err := json.Marshal(tailcfg.DERPAdmitClientRequest{
+		NodePublic: private.Public(),
+		Source:     netip.MustParseAddr("198.51.100.7"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

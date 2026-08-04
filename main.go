@@ -119,7 +119,7 @@ func (s *server) verify(w http.ResponseWriter, r *http.Request) {
 	var req tailcfg.DERPAdmitClientRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil || req.NodePublic.IsZero() {
+	if err := decoder.Decode(&req); err != nil || req.NodePublic.IsZero() || !req.Source.IsValid() {
 		s.logger.Warn("invalid admission request", "source", r.RemoteAddr, "error", err)
 		http.Error(w, `{"Allow":false}`, http.StatusBadRequest)
 		return

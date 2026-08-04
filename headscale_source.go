@@ -110,10 +110,13 @@ func sqliteURL(path, mode string) string {
 	if filepath.IsAbs(path) && !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	query := url.Values{}
+	query.Set("mode", mode)
+	query.Set("_pragma", "busy_timeout=2000")
 	return (&url.URL{
 		Scheme:   "file",
 		Path:     path,
-		RawQuery: "mode=" + mode,
+		RawQuery: query.Encode(),
 	}).String()
 }
 
