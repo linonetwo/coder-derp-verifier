@@ -28,8 +28,8 @@ const (
 	maxRequestBytes     = 64 << 10
 )
 
-type peerStore interface {
-	Contains(context.Context, []byte) (bool, error)
+type admissionStore interface {
+	Admit(context.Context, tailcfg.DERPAdmitClientRequest) (bool, error)
 	Ping(context.Context) error
 }
 
@@ -41,7 +41,11 @@ func (s *postgresStore) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-func (s *postgresStore) Contains(ctx context.Context, wanted []byte) (bool, error) {
+func (s *postgresStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest) (bool, error) {
+	wanted, err := req.NodePublic.MarshalBinary()
+	if err != nil {
+		return false, err
+	}
 	rows, err := s.pool.Query(ctx, `SELECT node FROM tailnet_peers WHERE status = 'ok'::tailnet_status`)
 	if err != nil {
 		return false, err
@@ -96,7 +100,7 @@ func nodeKey(node []byte) ([]byte, error) {
 }
 
 type server struct {
-	store        peerStore
+	store        admissionStore
 	queryTimeout time.Duration
 	retryCount   int
 	retryDelay   time.Duration
@@ -120,15 +124,10 @@ func (s *server) verify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"Allow":false}`, http.StatusBadRequest)
 		return
 	}
-	key, err := req.NodePublic.MarshalBinary()
-	if err != nil {
-		http.Error(w, `{"Allow":false}`, http.StatusBadRequest)
-		return
-	}
 
 	for attempt := 0; attempt <= s.retryCount; attempt++ {
 		ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
-		allow, queryErr := s.store.Contains(ctx, key)
+		allow, queryErr := s.store.Admit(ctx, req)
 		cancel()
 		if queryErr != nil {
 			s.logger.Error("admission lookup failed", "source", req.Source, "error", queryErr)
@@ -189,7 +188,7 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
-func main() {
+func runPostgres() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		slog.Error("DATABASE_URL is required")
@@ -241,4 +240,12 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "headscale-source" {
+		runHeadscaleSource(os.Args[2:])
+		return
+	}
+	runPostgres()
 }

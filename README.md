@@ -1,9 +1,13 @@
 # coder-derp-verifier
 
-`coder-derp-verifier` is a fail-closed admission controller for a
+`coder-derp-verifier` is a Go fail-closed admission controller for a
 [Tailscale DERP server](https://github.com/tailscale/tailscale/tree/main/cmd/derper).
-It permits only node public keys that are currently present in Coder's
-PostgreSQL HA coordinator `tailnet_peers` table with status `ok`.
+One binary provides two explicitly selected admission backends:
+
+- the default PostgreSQL backend permits node public keys currently present
+  in Coder's HA coordinator `tailnet_peers` table with status `ok`;
+- the `headscale-source` backend permits source IPs found in recent Headscale
+  node endpoints.
 
 This is a small external adapter. It does not patch or replace Coder or DERP.
 
@@ -23,11 +27,10 @@ file; Coder uses its own ephemeral tailnet and node keys.
 
 ## Headscale source-IP backend
 
-For single-replica Coder AGPL, `headscale_source_verifier.py` provides a
+For single-replica Coder AGPL, the `headscale-source` subcommand provides a
 weaker but practical alternative when every Coder client and workspace host is
 also enrolled in an outer Headscale network. It admits a DERP connection only
-when the TCP source IP appears in a recent, non-expired Headscale node
-endpoint.
+when the TCP source IP appears in a recent, non-expired Headscale node endpoint.
 
 Run the `-headscale-source` image on the Headscale host with a read-only mount
 of its SQLite database:
@@ -38,6 +41,10 @@ docker run --rm -p 8080:8080 \
   ghcr.io/linonetwo/coder-derp-verifier-headscale-source:latest \
   --database /headscale/headscale.db --max-node-age 2h
 ```
+
+The `-headscale-source` image contains the same static Go binary as the default
+image and selects the subcommand in its entrypoint. It does not contain a
+Python runtime.
 
 This backend does **not** prove that the inner Coder node key belongs to
 Coder. It proves that the connection originates from the same public IP as a

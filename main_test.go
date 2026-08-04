@@ -23,7 +23,7 @@ type fakeStore struct {
 	calls    int
 }
 
-func (f *fakeStore) Contains(context.Context, []byte) (bool, error) {
+func (f *fakeStore) Admit(context.Context, tailcfg.DERPAdmitClientRequest) (bool, error) {
 	f.calls++
 	return f.contains, f.err
 }

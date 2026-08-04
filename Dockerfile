@@ -1,4 +1,4 @@
-FROM golang:1.24.5-alpine3.22 AS build
+FROM golang:1.26.5-alpine3.23 AS build
 WORKDIR /src
 COPY go.mod ./
 COPY . .

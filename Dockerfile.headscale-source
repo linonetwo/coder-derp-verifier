@@ -1,11 +1,12 @@
-FROM python:3.13-alpine AS test
-WORKDIR /app
-COPY headscale_source_verifier.py .
-COPY tests ./tests
-RUN python -m unittest discover -s tests -v
+FROM golang:1.26.5-alpine3.23 AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+RUN go mod tidy && \
+    CGO_ENABLED=0 go test ./... && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/coder-derp-verifier .
 
-FROM python:3.13-alpine
-WORKDIR /app
-COPY --from=test /app/headscale_source_verifier.py .
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/coder-derp-verifier /coder-derp-verifier
 USER 65532:65532
-ENTRYPOINT ["python", "/app/headscale_source_verifier.py"]
+ENTRYPOINT ["/coder-derp-verifier", "headscale-source"]
