@@ -1,10 +1,10 @@
-FROM harbor.k3s.onetwo.website/docker-io/library/python:3.13-alpine AS test
+FROM python:3.13-alpine AS test
 WORKDIR /app
 COPY headscale_source_verifier.py .
 COPY tests ./tests
 RUN python -m unittest discover -s tests -v
 
-FROM harbor.k3s.onetwo.website/docker-io/library/python:3.13-alpine
+FROM python:3.13-alpine
 WORKDIR /app
 COPY --from=test /app/headscale_source_verifier.py .
 USER 65532:65532
