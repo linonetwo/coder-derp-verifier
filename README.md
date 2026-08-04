@@ -3,9 +3,15 @@
 `coder-derp-verifier` is a fail-closed admission controller for a
 [Tailscale DERP server](https://github.com/tailscale/tailscale/tree/main/cmd/derper).
 It permits only node public keys that are currently present in Coder's
-`tailnet_peers` table with status `ok`.
+PostgreSQL HA coordinator `tailnet_peers` table with status `ok`.
 
 This is a small external adapter. It does not patch or replace Coder or DERP.
+
+> [!IMPORTANT]
+> This backend requires Coder's PostgreSQL high-availability coordinator.
+> A single-replica Coder AGPL deployment uses an in-memory coordinator and
+> leaves `tailnet_peers` empty, so this verifier must not be attached there.
+> It will correctly fail closed, which would reject every Coder client.
 
 ## Why a separate verifier?
 
@@ -69,8 +75,8 @@ Database failures return HTTP 503. DERP must use
 
 - Use a dedicated PostgreSQL role with only `SELECT` on `tailnet_peers`.
 - Keep this service cluster-internal; only DERP should reach `/verify`.
-- `tailnet_peers` is an unlogged, ephemeral Coder table. Query the active
-  primary, never an asynchronous replica.
+- `tailnet_peers` is an unlogged, ephemeral Coder HA-coordinator table. Query
+  the active primary, never an asynchronous replica.
 - Requests are capped at 64 KiB and unknown JSON fields are rejected.
 
 ## License
