@@ -1,0 +1,11 @@
+FROM python:3.13-alpine AS test
+WORKDIR /app
+COPY headscale_source_verifier.py .
+COPY tests ./tests
+RUN python -m unittest discover -s tests -v
+
+FROM python:3.13-alpine
+WORKDIR /app
+COPY --from=test /app/headscale_source_verifier.py .
+USER 65532:65532
+ENTRYPOINT ["python", "/app/headscale_source_verifier.py"]

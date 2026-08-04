@@ -21,6 +21,30 @@ control can still be used as a relay by unrelated clients. Tailscale's
 verifiers cover Tailscale SaaS OAuth, a local `tailscaled`, or a static key
 file; Coder uses its own ephemeral tailnet and node keys.
 
+## Headscale source-IP backend
+
+For single-replica Coder AGPL, `headscale_source_verifier.py` provides a
+weaker but practical alternative when every Coder client and workspace host is
+also enrolled in an outer Headscale network. It admits a DERP connection only
+when the TCP source IP appears in a recent, non-expired Headscale node
+endpoint.
+
+Run the `-headscale-source` image on the Headscale host with a read-only mount
+of its SQLite database:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -v /var/lib/headscale/db:/headscale:ro \
+  ghcr.io/linonetwo/coder-derp-verifier-headscale-source:latest \
+  --database /headscale/headscale.db --max-node-age 2h
+```
+
+This backend does **not** prove that the inner Coder node key belongs to
+Coder. It proves that the connection originates from the same public IP as a
+recent outer Headscale node. Devices behind one NAT share that authorization.
+Use it only when this trade-off is acceptable, bind it to a private interface,
+and restrict the verifier port to the DERP host.
+
 ## Run
 
 Create a PostgreSQL role with read-only access to Coder's live primary:
