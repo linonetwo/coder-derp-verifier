@@ -37,14 +37,13 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 	}
 	defer db.Close()
 	if _, err := db.Exec(`CREATE TABLE nodes (
-		ip_addresses TEXT, endpoints TEXT, last_seen TEXT, expiry TEXT, deleted_at TEXT
+		ipv4 TEXT, ipv6 TEXT, endpoints TEXT, last_seen TEXT, expiry TEXT, deleted_at TEXT
 	)`); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	add := func(addresses, endpoints []string, lastSeen time.Time, expiry *time.Time, deleted bool) {
 		t.Helper()
-		encodedAddresses, _ := json.Marshal(addresses)
 		encodedEndpoints, _ := json.Marshal(endpoints)
 		var expiryValue any
 		if expiry != nil {
@@ -55,8 +54,8 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 			deletedValue = now.Format(time.RFC3339Nano)
 		}
 		if _, err := db.Exec(
-			"INSERT INTO nodes VALUES (?, ?, ?, ?, ?)",
-			string(encodedAddresses), string(encodedEndpoints),
+			"INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?)",
+			addresses[0], addresses[1], string(encodedEndpoints),
 			lastSeen.Format(time.RFC3339Nano), expiryValue, deletedValue,
 		); err != nil {
 			t.Fatal(err)
@@ -67,10 +66,10 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 		[]string{"198.51.100.7:41641", "[2001:db8::7]:41641"},
 		now, nil, false,
 	)
-	add([]string{"100.64.0.8"}, []string{"198.51.100.8:41641"}, now.Add(-3*time.Hour), nil, false)
+	add([]string{"100.64.0.8", ""}, []string{"198.51.100.8:41641"}, now.Add(-3*time.Hour), nil, false)
 	expired := now.Add(-time.Second)
-	add([]string{"100.64.0.9"}, []string{"198.51.100.9:41641"}, now, &expired, false)
-	add([]string{"100.64.0.10"}, []string{"198.51.100.10:41641"}, now, nil, true)
+	add([]string{"100.64.0.9", ""}, []string{"198.51.100.9:41641"}, now, &expired, false)
+	add([]string{"100.64.0.10", ""}, []string{"198.51.100.10:41641"}, now, nil, true)
 
 	store := &headscaleEndpointStore{db: db, maxNodeAge: 2 * time.Hour, now: func() time.Time { return now }}
 	for _, source := range []string{

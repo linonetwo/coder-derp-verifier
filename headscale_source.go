@@ -29,12 +29,53 @@ type headscaleEndpointStore struct {
 	now        func() time.Time
 }
 
+type headscaleAddressSchema int
+
+const (
+	headscaleAddressSchemaUnknown headscaleAddressSchema = iota
+	headscaleAddressSchemaSeparate
+	headscaleAddressSchemaArray
+)
+
+func (s *headscaleEndpointStore) addressSchema(ctx context.Context) (headscaleAddressSchema, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(nodes)")
+	if err != nil {
+		return headscaleAddressSchemaUnknown, err
+	}
+	defer rows.Close()
+
+	var hasIPv4, hasIPv6, hasIPAddresses bool
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return headscaleAddressSchemaUnknown, err
+		}
+		switch name {
+		case "ipv4":
+			hasIPv4 = true
+		case "ipv6":
+			hasIPv6 = true
+		case "ip_addresses":
+			hasIPAddresses = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return headscaleAddressSchemaUnknown, err
+	}
+	if hasIPAddresses {
+		return headscaleAddressSchemaArray, nil
+	}
+	if hasIPv4 && hasIPv6 {
+		return headscaleAddressSchemaSeparate, nil
+	}
+	return headscaleAddressSchemaUnknown, errors.New("Headscale nodes address columns are unavailable")
+}
+
 func (s *headscaleEndpointStore) Ping(ctx context.Context) error {
-	var count int
-	return s.db.QueryRowContext(
-		ctx,
-		"SELECT COUNT(ip_addresses) FROM nodes",
-	).Scan(&count)
+	_, err := s.addressSchema(ctx)
+	return err
 }
 
 func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest) (bool, error) {
@@ -42,11 +83,27 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 	if !source.IsValid() {
 		return false, errors.New("DERP source address is missing")
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT ip_addresses, endpoints, last_seen, expiry
-		FROM nodes
-		WHERE deleted_at IS NULL
-	`)
+	schema, err := s.addressSchema(ctx)
+	if err != nil {
+		return false, err
+	}
+	var rows *sql.Rows
+	switch schema {
+	case headscaleAddressSchemaArray:
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT ip_addresses, '', endpoints, last_seen, expiry
+			FROM nodes
+			WHERE deleted_at IS NULL
+		`)
+	case headscaleAddressSchemaSeparate:
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT ipv4, ipv6, endpoints, last_seen, expiry
+			FROM nodes
+			WHERE deleted_at IS NULL
+		`)
+	default:
+		return false, errors.New("unsupported Headscale nodes address schema")
+	}
 	if err != nil {
 		return false, err
 	}
@@ -54,9 +111,9 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 
 	now := s.now().UTC()
 	for rows.Next() {
-		var addressesRaw, endpointsRaw string
+		var firstAddressRaw, secondAddressRaw, endpointsRaw string
 		var lastSeenRaw, expiryRaw sql.NullString
-		if err := rows.Scan(&addressesRaw, &endpointsRaw, &lastSeenRaw, &expiryRaw); err != nil {
+		if err := rows.Scan(&firstAddressRaw, &secondAddressRaw, &endpointsRaw, &lastSeenRaw, &expiryRaw); err != nil {
 			return false, err
 		}
 		lastSeen, err := parseDatabaseTime(lastSeenRaw)
@@ -68,10 +125,17 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 			continue
 		}
 		var addresses []string
-		if err := json.Unmarshal([]byte(addressesRaw), &addresses); err != nil {
-			return false, fmt.Errorf("parse Headscale node ip_addresses: %w", err)
+		if schema == headscaleAddressSchemaArray {
+			if err := json.Unmarshal([]byte(firstAddressRaw), &addresses); err != nil {
+				return false, fmt.Errorf("parse Headscale node ip_addresses: %w", err)
+			}
+		} else {
+			addresses = []string{firstAddressRaw, secondAddressRaw}
 		}
 		for _, rawAddress := range addresses {
+			if strings.TrimSpace(rawAddress) == "" {
+				continue
+			}
 			address, err := netip.ParseAddr(rawAddress)
 			if err != nil {
 				return false, fmt.Errorf("parse Headscale node IP address %q: %w", rawAddress, err)
