@@ -30,11 +30,11 @@ type headscaleEndpointStore struct {
 }
 
 func (s *headscaleEndpointStore) Ping(ctx context.Context) error {
-	var one int
+	var count int
 	return s.db.QueryRowContext(
 		ctx,
-		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nodes'",
-	).Scan(&one)
+		"SELECT COUNT(ip_addresses) FROM nodes",
+	).Scan(&count)
 }
 
 func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest) (bool, error) {
@@ -43,7 +43,7 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 		return false, errors.New("DERP source address is missing")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT endpoints, last_seen, expiry
+		SELECT ip_addresses, endpoints, last_seen, expiry
 		FROM nodes
 		WHERE deleted_at IS NULL
 	`)
@@ -54,9 +54,9 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 
 	now := s.now().UTC()
 	for rows.Next() {
-		var endpointsRaw string
+		var addressesRaw, endpointsRaw string
 		var lastSeenRaw, expiryRaw sql.NullString
-		if err := rows.Scan(&endpointsRaw, &lastSeenRaw, &expiryRaw); err != nil {
+		if err := rows.Scan(&addressesRaw, &endpointsRaw, &lastSeenRaw, &expiryRaw); err != nil {
 			return false, err
 		}
 		lastSeen, err := parseDatabaseTime(lastSeenRaw)
@@ -66,6 +66,19 @@ func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmi
 		expiry, err := parseDatabaseTime(expiryRaw)
 		if err != nil || (!expiry.IsZero() && !expiry.After(now)) {
 			continue
+		}
+		var addresses []string
+		if err := json.Unmarshal([]byte(addressesRaw), &addresses); err != nil {
+			return false, fmt.Errorf("parse Headscale node ip_addresses: %w", err)
+		}
+		for _, rawAddress := range addresses {
+			address, err := netip.ParseAddr(rawAddress)
+			if err != nil {
+				return false, fmt.Errorf("parse Headscale node IP address %q: %w", rawAddress, err)
+			}
+			if address == source {
+				return true, nil
+			}
 		}
 		var endpoints []string
 		if err := json.Unmarshal([]byte(endpointsRaw), &endpoints); err != nil {

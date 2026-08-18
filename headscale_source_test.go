@@ -37,14 +37,15 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 	}
 	defer db.Close()
 	if _, err := db.Exec(`CREATE TABLE nodes (
-		endpoints TEXT, last_seen TEXT, expiry TEXT, deleted_at TEXT
+		ip_addresses TEXT, endpoints TEXT, last_seen TEXT, expiry TEXT, deleted_at TEXT
 	)`); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
-	add := func(endpoints []string, lastSeen time.Time, expiry *time.Time, deleted bool) {
+	add := func(addresses, endpoints []string, lastSeen time.Time, expiry *time.Time, deleted bool) {
 		t.Helper()
-		encoded, _ := json.Marshal(endpoints)
+		encodedAddresses, _ := json.Marshal(addresses)
+		encodedEndpoints, _ := json.Marshal(endpoints)
 		var expiryValue any
 		if expiry != nil {
 			expiryValue = expiry.Format(time.RFC3339Nano)
@@ -54,26 +55,46 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 			deletedValue = now.Format(time.RFC3339Nano)
 		}
 		if _, err := db.Exec(
-			"INSERT INTO nodes VALUES (?, ?, ?, ?)",
-			string(encoded), lastSeen.Format(time.RFC3339Nano), expiryValue, deletedValue,
+			"INSERT INTO nodes VALUES (?, ?, ?, ?, ?)",
+			string(encodedAddresses), string(encodedEndpoints),
+			lastSeen.Format(time.RFC3339Nano), expiryValue, deletedValue,
 		); err != nil {
 			t.Fatal(err)
 		}
 	}
-	add([]string{"198.51.100.7:41641", "[2001:db8::7]:41641"}, now, nil, false)
-	add([]string{"198.51.100.8:41641"}, now.Add(-3*time.Hour), nil, false)
+	add(
+		[]string{"100.64.0.7", "fd7a:115c:a1e0::7"},
+		[]string{"198.51.100.7:41641", "[2001:db8::7]:41641"},
+		now, nil, false,
+	)
+	add([]string{"100.64.0.8"}, []string{"198.51.100.8:41641"}, now.Add(-3*time.Hour), nil, false)
 	expired := now.Add(-time.Second)
-	add([]string{"198.51.100.9:41641"}, now, &expired, false)
-	add([]string{"198.51.100.10:41641"}, now, nil, true)
+	add([]string{"100.64.0.9"}, []string{"198.51.100.9:41641"}, now, &expired, false)
+	add([]string{"100.64.0.10"}, []string{"198.51.100.10:41641"}, now, nil, true)
 
 	store := &headscaleEndpointStore{db: db, maxNodeAge: 2 * time.Hour, now: func() time.Time { return now }}
-	for _, source := range []string{"198.51.100.7", "2001:db8::7"} {
+	for _, source := range []string{
+		"100.64.0.7",
+		"fd7a:115c:a1e0::7",
+		"198.51.100.7",
+		"2001:db8::7",
+	} {
 		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)})
 		if err != nil || !allowed {
 			t.Fatalf("source %s: allowed=%v err=%v", source, allowed, err)
 		}
 	}
-	for _, source := range []string{"198.51.100.8", "198.51.100.9", "198.51.100.10", "198.51.100.11"} {
+	for _, source := range []string{
+		"100.64.0.8",
+		"100.64.0.9",
+		"100.64.0.10",
+		"100.64.0.11",
+		"fd7a:115c:a1e0::11",
+		"198.51.100.8",
+		"198.51.100.9",
+		"198.51.100.10",
+		"198.51.100.11",
+	} {
 		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)})
 		if err != nil || allowed {
 			t.Fatalf("source %s: allowed=%v err=%v", source, allowed, err)
