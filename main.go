@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,7 +30,7 @@ const (
 )
 
 type admissionStore interface {
-	Admit(context.Context, tailcfg.DERPAdmitClientRequest) (bool, error)
+	Admit(context.Context, tailcfg.DERPAdmitClientRequest, uint16) (bool, error)
 	Ping(context.Context) error
 }
 
@@ -41,7 +42,7 @@ func (s *postgresStore) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-func (s *postgresStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest) (bool, error) {
+func (s *postgresStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest, _ uint16) (bool, error) {
 	wanted, err := req.NodePublic.MarshalBinary()
 	if err != nil {
 		return false, err
@@ -101,6 +102,7 @@ func nodeKey(node []byte) ([]byte, error) {
 
 type server struct {
 	store        admissionStore
+	attestor     attestationRegistrar
 	queryTimeout time.Duration
 	retryCount   int
 	retryDelay   time.Duration
@@ -125,9 +127,16 @@ func (s *server) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	region, err := requestDERPRegion(r)
+	if err != nil {
+		s.logger.Warn("invalid DERP region", "region", r.URL.Query().Get("region"), "error", err)
+		http.Error(w, `{"Allow":false}`, http.StatusBadRequest)
+		return
+	}
+
 	for attempt := 0; attempt <= s.retryCount; attempt++ {
 		ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
-		allow, queryErr := s.store.Admit(ctx, req)
+		allow, queryErr := s.store.Admit(ctx, req, region)
 		cancel()
 		if queryErr != nil {
 			s.logger.Error("admission lookup failed", "source", req.Source, "error", queryErr)
@@ -148,8 +157,56 @@ func (s *server) verify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.logger.Warn("rejected unknown Coder tailnet key", "source", req.Source)
+	s.logger.Warn("rejected DERP client", "source", req.Source, "region", region)
 	_ = json.NewEncoder(w).Encode(tailcfg.DERPAdmitClientResponse{Allow: false})
+}
+
+func requestDERPRegion(r *http.Request) (uint16, error) {
+	value := strings.TrimSpace(r.URL.Query().Get("region"))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseUint(value, 10, 16)
+	if err != nil || parsed == 0 {
+		return 0, errors.New("region must be a non-zero uint16")
+	}
+	return uint16(parsed), nil
+}
+
+func (s *server) registerAttestor(w http.ResponseWriter, r *http.Request) {
+	if s.attestor == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var registration attestationRegistration
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&registration); err != nil || registration.NodePublic.IsZero() || registration.Region == 0 {
+		s.logger.Warn("invalid egress attestation registration", "source", r.RemoteAddr, "error", err)
+		http.Error(w, "invalid registration", http.StatusBadRequest)
+		return
+	}
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	token, ok := strings.CutPrefix(authorization, "Bearer ")
+	if !ok || strings.TrimSpace(token) == "" {
+		http.Error(w, "missing bearer token", http.StatusUnauthorized)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.queryTimeout)
+	err := s.attestor.Register(ctx, registration, token)
+	cancel()
+	if err != nil {
+		s.logger.Warn("rejected egress attestation registration", "source", r.RemoteAddr, "region", registration.Region, "error", err)
+		http.Error(w, "attestation registration rejected", http.StatusForbidden)
+		return
+	}
+	s.logger.Info("registered egress attestor", "region", registration.Region, "node_public", registration.NodePublic.ShortString())
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +274,7 @@ func runPostgres() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /verify", app.verify)
+	mux.HandleFunc("POST /attest/register", app.registerAttestor)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", app.ready)
 
@@ -245,6 +303,10 @@ func runPostgres() {
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "headscale-source" {
 		runHeadscaleSource(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "egress-attestor" {
+		runEgressAttestor(os.Args[2:])
 		return
 	}
 	runPostgres()

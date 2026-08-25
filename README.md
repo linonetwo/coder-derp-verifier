@@ -52,6 +52,58 @@ recent outer Headscale node. Devices behind one NAT share that authorization.
 Use it only when this trade-off is acceptable, bind it to a private interface,
 and restrict the verifier port to the DERP host.
 
+### Kubernetes egress attestation
+
+Some worker networks use destination/protocol-aware NAT: a Headscale UDP
+endpoint is not necessarily the TCP source that the public Coder DERP sees.
+For that case, `headscale-source` can add short-lived leases for explicitly
+configured DERP regions:
+
+1. a non-privileged DaemonSet on each worker creates an ephemeral DERP node
+   key and sends it to `POST /attest/register` with a projected Kubernetes
+   ServiceAccount token;
+2. the verifier uses Kubernetes `TokenReview`, requires the configured
+   `namespace:serviceaccount`, and records the Pod-bound node name; and
+3. only when that registered key completes a real DERP handshake does
+   `/verify?region=<id>` observe and lease the actual TCP source. Other Coder
+   keys are admitted only from that exact source and region until the lease
+   expires.
+
+This does not use a generic public-IP service, does not expose a new public
+listener, and does not change a Grafana dashboard. Registration and leases are
+in-memory by design: loss of the verifier or attestor expires access rather
+than retaining stale authorization.
+
+Enable it only for the DERP regions that have a public endpoint reachable from
+the worker Pod network:
+
+```sh
+coder-derp-verifier headscale-source \
+  --database /headscale/headscale.db \
+  --attestation-regions=1002 \
+  --attestation-lease-ttl=5m \
+  --attestation-registration-ttl=20m \
+  --attestation-service-account=monitoring:coder-derp-egress-attestor \
+  --attestation-audience=coder-derp-egress-attestor
+```
+
+The verifier's ServiceAccount needs only `create` on
+`authentication.k8s.io/tokenreviews`. The attestor must mount an audience-bound
+projected token and use the companion `-attestor` image, for example:
+
+```sh
+coder-derp-verifier egress-attestor \
+  --verifier=http://100.64.0.1:18080 \
+  --derp=1002=https://coder-derp.example:41647/derp
+```
+
+Configure the associated DERP with the immutable region query label:
+
+```sh
+derper --verify-client-url=http://verifier:8080/verify?region=1002 \
+  --verify-client-url-fail-open=false
+```
+
 ## Run
 
 Create a PostgreSQL role with read-only access to Coder's live primary:
@@ -96,6 +148,8 @@ client can race its first DERP dial against Coder's peer registration.
 Endpoints:
 
 - `POST /verify`: Tailscale DERP admission API
+- `POST /attest/register`: projected-token registration for configured egress
+  attestors (enabled only with `--attestation-regions`)
 - `GET /healthz`: process liveness
 - `GET /readyz`: database readiness
 

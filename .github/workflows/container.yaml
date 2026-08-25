@@ -55,3 +55,19 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.source-meta.outputs.tags }}
           labels: ${{ steps.source-meta.outputs.labels }}
+      - uses: docker/metadata-action@v5
+        id: attestor-meta
+        with:
+          images: ghcr.io/${{ github.repository }}-attestor
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.attestor
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          tags: ${{ steps.attestor-meta.outputs.tags }}
+          labels: ${{ steps.attestor-meta.outputs.labels }}

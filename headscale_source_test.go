@@ -78,7 +78,7 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 		"198.51.100.7",
 		"2001:db8::7",
 	} {
-		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)})
+		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)}, 0)
 		if err != nil || !allowed {
 			t.Fatalf("source %s: allowed=%v err=%v", source, allowed, err)
 		}
@@ -94,7 +94,7 @@ func TestHeadscaleEndpointStore(t *testing.T) {
 		"198.51.100.10",
 		"198.51.100.11",
 	} {
-		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)})
+		allowed, err := store.Admit(context.Background(), tailcfg.DERPAdmitClientRequest{Source: netip.MustParseAddr(source)}, 0)
 		if err != nil || allowed {
 			t.Fatalf("source %s: allowed=%v err=%v", source, allowed, err)
 		}

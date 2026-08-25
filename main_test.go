@@ -24,9 +24,27 @@ type fakeStore struct {
 	calls    int
 }
 
-func (f *fakeStore) Admit(context.Context, tailcfg.DERPAdmitClientRequest) (bool, error) {
+func (f *fakeStore) Admit(context.Context, tailcfg.DERPAdmitClientRequest, uint16) (bool, error) {
 	f.calls++
 	return f.contains, f.err
+}
+
+func TestRequestDERPRegion(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want uint16
+		err  bool
+	}{
+		{"/verify", 0, false},
+		{"/verify?region=1002", 1002, false},
+		{"/verify?region=0", 0, true},
+		{"/verify?region=wrong", 0, true},
+	} {
+		got, err := requestDERPRegion(httptest.NewRequest(http.MethodPost, test.path, nil))
+		if (err != nil) != test.err || got != test.want {
+			t.Fatalf("requestDERPRegion(%q) = %d, %v; want %d, err=%v", test.path, got, err, test.want, test.err)
+		}
+	}
 }
 func (f *fakeStore) Ping(context.Context) error { return f.err }
 

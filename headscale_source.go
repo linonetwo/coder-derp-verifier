@@ -78,7 +78,7 @@ func (s *headscaleEndpointStore) Ping(ctx context.Context) error {
 	return err
 }
 
-func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest) (bool, error) {
+func (s *headscaleEndpointStore) Admit(ctx context.Context, req tailcfg.DERPAdmitClientRequest, _ uint16) (bool, error) {
 	source := req.Source
 	if !source.IsValid() {
 		return false, errors.New("DERP source address is missing")
@@ -203,6 +203,14 @@ func runHeadscaleSource(args []string) {
 	listen := flags.String("listen", "0.0.0.0", "HTTP listen address")
 	port := flags.Int("port", 8080, "HTTP listen port")
 	maxNodeAge := flags.Duration("max-node-age", 2*time.Hour, "maximum Headscale node age")
+	attestationRegions := flags.String("attestation-regions", "", "comma-separated DERP regions that accept egress attestations (disabled when empty)")
+	attestationLeaseTTL := flags.Duration("attestation-lease-ttl", 5*time.Minute, "how long an observed egress source is admitted")
+	attestationRegistrationTTL := flags.Duration("attestation-registration-ttl", 20*time.Minute, "how long an attestor registration is valid")
+	attestationServiceAccount := flags.String("attestation-service-account", "monitoring:coder-derp-egress-attestor", "allowed namespace:serviceaccount for egress attestors")
+	kubernetesAPIServer := flags.String("kubernetes-api-server", "", "Kubernetes API URL; defaults to in-cluster service")
+	kubernetesCAFile := flags.String("kubernetes-ca-file", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "Kubernetes API CA certificate")
+	kubernetesTokenFile := flags.String("kubernetes-token-file", "/var/run/secrets/kubernetes.io/serviceaccount/token", "verifier service-account token")
+	attestationAudience := flags.String("attestation-audience", "coder-derp-egress-attestor", "projected token audience required for attestor registration")
 	_ = flags.Parse(args)
 	if strings.TrimSpace(*database) == "" {
 		slog.Error("--database is required")
@@ -217,12 +225,43 @@ func runHeadscaleSource(args []string) {
 	defer db.Close()
 	db.SetMaxOpenConns(4)
 
+	endpointStore := &headscaleEndpointStore{
+		db:         db,
+		maxNodeAge: *maxNodeAge,
+		now:        time.Now,
+	}
+	var store admissionStore = endpointStore
+	var registrar attestationRegistrar
+	if strings.TrimSpace(*attestationRegions) != "" {
+		reviewer, err := newKubernetesTokenReviewer(kubernetesTokenReviewerConfig{
+			APIServer: *kubernetesAPIServer,
+			CAFile:    *kubernetesCAFile,
+			TokenFile: *kubernetesTokenFile,
+			Audience:  *attestationAudience,
+		})
+		if err != nil {
+			slog.Error("configure Kubernetes TokenReview client", "error", err)
+			os.Exit(1)
+		}
+		attestation, err := newEgressAttestation(egressAttestationConfig{
+			Regions:               *attestationRegions,
+			LeaseTTL:              *attestationLeaseTTL,
+			RegistrationTTL:       *attestationRegistrationTTL,
+			AllowedServiceAccount: *attestationServiceAccount,
+			TokenReviewer:         reviewer,
+		})
+		if err != nil {
+			slog.Error("configure egress attestation", "error", err)
+			os.Exit(1)
+		}
+		attestedStore := &attestedHeadscaleStore{headscale: endpointStore, attestation: attestation}
+		store = attestedStore
+		registrar = attestedStore
+	}
+
 	app := &server{
-		store: &headscaleEndpointStore{
-			db:         db,
-			maxNodeAge: *maxNodeAge,
-			now:        time.Now,
-		},
+		store:        store,
+		attestor:     registrar,
 		queryTimeout: defaultQueryTimeout,
 		retryCount:   0,
 		retryDelay:   0,
@@ -230,6 +269,7 @@ func runHeadscaleSource(args []string) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /verify", app.verify)
+	mux.HandleFunc("POST /attest/register", app.registerAttestor)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", app.ready)
 
